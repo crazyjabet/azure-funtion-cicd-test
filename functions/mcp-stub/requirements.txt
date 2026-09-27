@@ -1,0 +1,5 @@
+azure-functions
+requests
+PyJWT
+azure-cosmos
+azure-identity

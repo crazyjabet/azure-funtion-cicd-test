@@ -1,0 +1,109 @@
+name: Deploy Azure Functions
+
+# push 到 main：只部署有變更的 App（依 functions/<app>/ 路徑判斷）
+# workflow_dispatch：手動觸發時兩個 App 都部署
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC token，azure/login 必要
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      mcp-stub: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.mcp-stub == 'true' }}
+      hubspot-sync: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.hubspot-sync == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'push'
+        with:
+          filters: |
+            mcp-stub:
+              - 'functions/mcp-stub/**'
+              - '.github/workflows/deploy.yml'
+            hubspot-sync:
+              - 'functions/hubspot-sync/**'
+              - '.github/workflows/deploy.yml'
+
+  # mcp-stub → Linux Consumption (Y1)：不會做遠端建置，
+  # 依賴要先在 runner 上安裝到 .python_packages 一起打包
+  mcp-stub:
+    needs: changes
+    if: needs.changes.outputs.mcp-stub == 'true'
+    runs-on: ubuntu-latest
+    environment: mf-test   # 必須與 federated credential 的 subject 一致
+    concurrency: deploy-mcp-stub
+    defaults:
+      run:
+        working-directory: functions/mcp-stub
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Test
+        run: |
+          python -m pip install -r requirements.txt pytest
+          python -m pytest -q -p no:cacheprovider tests
+
+      - name: Vendor dependencies
+        run: python -m pip install --target=.python_packages/lib/site-packages -r requirements.txt
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: azure/functions-action@v1
+        with:
+          app-name: taitra-mcp-test-func
+          package: functions/mcp-stub
+          respect-funcignore: true
+
+  # hubspot-sync → Flex Consumption：由平台做遠端建置
+  hubspot-sync:
+    needs: changes
+    if: needs.changes.outputs.hubspot-sync == 'true'
+    runs-on: ubuntu-latest
+    environment: mf-test
+    concurrency: deploy-hubspot-sync
+    defaults:
+      run:
+        working-directory: functions/hubspot-sync
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Test
+        run: |
+          python -m pip install -r requirements.txt pytest
+          python -m pytest -q -p no:cacheprovider tests
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: azure/functions-action@v1
+        with:
+          app-name: taitra-mcp-test-hubspot-sync-func
+          package: functions/hubspot-sync
+          sku: flexconsumption
+          remote-build: true
+          respect-funcignore: true
