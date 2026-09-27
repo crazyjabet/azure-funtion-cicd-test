@@ -57,8 +57,16 @@ jobs:
           python -m pip install -r requirements.txt pytest
           python -m pytest -q -p no:cacheprovider tests
 
+      # 必須指定 manylinux2014：runner (ubuntu-latest) 的 glibc 比 Functions
+      # Python 3.11 執行環境新，不指定會裝到 cryptography 等需要較新 glibc 的
+      # wheel，App 啟動時 import 失敗（GLIBC_2.33 not found）
       - name: Vendor dependencies
-        run: python -m pip install --target=.python_packages/lib/site-packages -r requirements.txt
+        run: |
+          python -m pip install \
+            --platform manylinux2014_x86_64 --only-binary=:all: \
+            --python-version ${{ env.PYTHON_VERSION }} \
+            --target=.python_packages/lib/site-packages \
+            -r requirements.txt
 
       - uses: azure/login@v2
         with:
